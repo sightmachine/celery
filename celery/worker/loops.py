@@ -26,6 +26,9 @@ def _quick_drain(connection, timeout=0.1):
 
 
 def _enable_amqheartbeats(timer, connection, rate=2.0):
+    # Store the latest heartbeat error or None in a one-element list. Then the
+    # heartbeat thread and main loop can use it as shared memory; any exception
+    # caught by the heartbeat thread can be read by asynloop / synloop.
     heartbeat_error = [None]
 
     if not connection:
