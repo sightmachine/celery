@@ -18,8 +18,14 @@ from celery.utils.functional import dictfilter
 from celery.utils.log import get_logger
 from celery.utils.time import humanize_seconds
 
-from . import async
-from . import base
+from .asynchronous import AsyncBackendMixin, BaseResultConsumer
+from .base import BaseKeyValueStoreBackend
+
+try:
+    from urllib.parse import unquote
+except ImportError:
+    # Python 2
+    from urlparse import unquote
 
 try:
     import redis
@@ -40,8 +46,8 @@ E_LOST = 'Connection to Redis lost: Retry (%s/%s) %s.'
 logger = get_logger(__name__)
 
 
-class ResultConsumer(async.BaseResultConsumer):
 
+class ResultConsumer(BaseResultConsumer):
     _pubsub = None
 
     def __init__(self, *args, **kwargs):
@@ -88,7 +94,7 @@ class ResultConsumer(async.BaseResultConsumer):
             self._pubsub.unsubscribe(key)
 
 
-class RedisBackend(base.BaseKeyValueStoreBackend, async.AsyncBackendMixin):
+class RedisBackend(BaseKeyValueStoreBackend, AsyncBackendMixin):
     """Redis task result store."""
 
     ResultConsumer = ResultConsumer
