@@ -24,7 +24,6 @@ for mod in (mod for mod in sys.modules if mod.startswith(RACE_MODS)):
 
 # idiotic pep8.py does not allow expressions before imports
 # so have to silence errors here
-from kombu.async import timer as _timer  # noqa
 
 from celery import signals  # noqa
 

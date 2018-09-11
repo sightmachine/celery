@@ -20,7 +20,6 @@ from kombu.asynchronous.timer import logger, to_timestamp
 
 from celery.five import THREAD_TIMEOUT_MAX
 
-from kombu.async.timer import Entry, Timer as Schedule, to_timestamp, logger
 
 TIMER_DEBUG = os.environ.get('TIMER_DEBUG')
 
