@@ -5,7 +5,7 @@ import socket
 import pytest
 
 from case import Mock
-from kombu.async import Hub, READ, WRITE, ERR
+from kombu.asynchronous import Hub, READ, WRITE, ERR
 
 from celery.bootsteps import CLOSE, RUN
 from celery.exceptions import (
