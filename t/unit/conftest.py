@@ -18,7 +18,7 @@ from celery.backends.cache import CacheBackend, DummyClient
 # in case user did not do the `python setup.py develop` yet,
 # that installs the pytest plugin into the setuptools registry.
 from celery.contrib.pytest import (
-    celery_app, celery_enable_logging, depends_on_current_app,
+    celery_app, celery_enable_logging, depends_on_current_app, celery_parameters
 )
 from celery.contrib.testing.app import Trap, TestApp
 from celery.contrib.testing.mocks import (

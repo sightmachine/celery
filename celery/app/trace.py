@@ -211,10 +211,15 @@ class TraceInfo(object):
                                       einfo=einfo)
             self._log_error(task, req, einfo)
             return einfo
-        except Exception as exc2:
-            logger.error('Handling task failure failed itself: %r',
-                         exc2,
-                         exc_info=True)
+        except Exception as fail_exc:
+            _, _, tmp_tb = sys.exc_info()
+            try:
+                msg = 'Exception raised while handling failure: {0!r}:\n{1}' \
+                    .format(fail_exc, tmp_tb)
+                warn(RuntimeWarning(msg))
+            finally:
+                del tmp_tb
+
             return einfo
         finally:
             del tb
