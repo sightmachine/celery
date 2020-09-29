@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Gevent execution pool."""
 from __future__ import absolute_import, unicode_literals
-from kombu.async import timer as _timer
+
+from kombu.asynchronous import timer as _timer
 from kombu.five import monotonic
 from . import base
 try:
@@ -31,7 +32,7 @@ def apply_timeout(target, args=(), kwargs={}, callback=None,
 class Timer(_timer.Timer):
 
     def __init__(self, *args, **kwargs):
-        from gevent.greenlet import Greenlet, GreenletExit
+        from gevent import Greenlet, GreenletExit
 
         class _Greenlet(Greenlet):
             cancel = Greenlet.kill

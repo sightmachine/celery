@@ -1,5 +1,6 @@
 from __future__ import absolute_import, unicode_literals
 import pytest
+import ssl
 from datetime import timedelta
 from contextlib import contextmanager
 from pickle import loads, dumps
@@ -118,6 +119,66 @@ class redis(object):
             pass
 
 
+class sentinel(object):
+    Sentinel = Sentinel
+
+
+class test_RedisResultConsumer:
+    def get_backend(self):
+        from celery.backends.redis import RedisBackend
+
+        class _RedisBackend(RedisBackend):
+            redis = redis
+
+        return _RedisBackend(app=self.app)
+
+    def get_consumer(self):
+        return self.get_backend().result_consumer
+
+    @patch('celery.backends.asynchronous.BaseResultConsumer.on_after_fork')
+    def test_on_after_fork(self, parent_method):
+        consumer = self.get_consumer()
+        consumer.start('none')
+        consumer.on_after_fork()
+        parent_method.assert_called_once()
+        consumer.backend.client.connection_pool.reset.assert_called_once()
+        consumer._pubsub.close.assert_called_once()
+        # PubSub instance not initialized - exception would be raised
+        # when calling .close()
+        consumer._pubsub = None
+        parent_method.reset_mock()
+        consumer.backend.client.connection_pool.reset.reset_mock()
+        consumer.on_after_fork()
+        parent_method.assert_called_once()
+        consumer.backend.client.connection_pool.reset.assert_called_once()
+
+        # Continues on KeyError
+        consumer._pubsub = Mock()
+        consumer._pubsub.close = Mock(side_effect=KeyError)
+        parent_method.reset_mock()
+        consumer.backend.client.connection_pool.reset.reset_mock()
+        consumer.on_after_fork()
+        parent_method.assert_called_once()
+
+    @patch('celery.backends.redis.ResultConsumer.cancel_for')
+    @patch('celery.backends.asynchronous.BaseResultConsumer.on_state_change')
+    def test_on_state_change(self, parent_method, cancel_for):
+        consumer = self.get_consumer()
+        meta = {'task_id': 'testing', 'status': states.SUCCESS}
+        message = 'hello'
+        consumer.on_state_change(meta, message)
+        parent_method.assert_called_once_with(meta, message)
+        cancel_for.assert_called_once_with(meta['task_id'])
+
+        # Does not call cancel_for for other states
+        meta = {'task_id': 'testing2', 'status': states.PENDING}
+        parent_method.reset_mock()
+        cancel_for.reset_mock()
+        consumer.on_state_change(meta, message)
+        parent_method.assert_called_once_with(meta, message)
+        cancel_for.assert_not_called()
+
+
 class test_RedisBackend:
 
     def get_backend(self):
@@ -178,6 +239,34 @@ class test_RedisBackend:
         assert x.connparams['socket_timeout'] == 30.0
         assert 'socket_connect_timeout' not in x.connparams
         assert x.connparams['db'] == 3
+
+    @skip.unless_module('redis')
+    def test_backend_ssl(self):
+        self.app.conf.redis_backend_use_ssl = {
+            'ssl_cert_reqs': ssl.CERT_REQUIRED,
+            'ssl_ca_certs': '/path/to/ca.crt',
+            'ssl_certfile': '/path/to/client.crt',
+            'ssl_keyfile': '/path/to/client.key',
+        }
+        self.app.conf.redis_socket_timeout = 30.0
+        self.app.conf.redis_socket_connect_timeout = 100.0
+        x = self.Backend(
+            'redis://:bosco@vandelay.com:123//1', app=self.app,
+        )
+        assert x.connparams
+        assert x.connparams['host'] == 'vandelay.com'
+        assert x.connparams['db'] == 1
+        assert x.connparams['port'] == 123
+        assert x.connparams['password'] == 'bosco'
+        assert x.connparams['socket_timeout'] == 30.0
+        assert x.connparams['socket_connect_timeout'] == 100.0
+        assert x.connparams['ssl_cert_reqs'] == ssl.CERT_REQUIRED
+        assert x.connparams['ssl_ca_certs'] == '/path/to/ca.crt'
+        assert x.connparams['ssl_certfile'] == '/path/to/client.crt'
+        assert x.connparams['ssl_keyfile'] == '/path/to/client.key'
+
+        from redis.connection import SSLConnection
+        assert x.connparams['connection_class'] is SSLConnection
 
     def test_compat_propertie(self):
         x = self.Backend(

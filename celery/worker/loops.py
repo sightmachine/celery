@@ -2,6 +2,7 @@
 from __future__ import absolute_import, unicode_literals
 import errno
 import socket
+
 from celery import bootsteps
 from celery.exceptions import WorkerShutdown, WorkerTerminate, WorkerLostError
 from celery.utils.log import get_logger
@@ -25,11 +26,26 @@ def _quick_drain(connection, timeout=0.1):
 
 
 def _enable_amqheartbeats(timer, connection, rate=2.0):
-    if connection:
-        tick = connection.heartbeat_check
-        heartbeat = connection.get_heartbeat_interval()  # negotiated
-        if heartbeat and connection.supports_heartbeats:
-            timer.call_repeatedly(heartbeat / rate, tick, (rate,))
+    # Store the latest heartbeat error or None in a one-element list. Then the
+    # heartbeat thread and main loop can use it as shared memory; any exception
+    # caught by the heartbeat thread can be read by asynloop / synloop.
+    heartbeat_error = [None]
+
+    if not connection:
+        return heartbeat_error
+
+    heartbeat = connection.get_heartbeat_interval()  # negotiated
+    if not (heartbeat and connection.supports_heartbeats):
+        return heartbeat_error
+
+    def tick(rate):
+        try:
+            connection.heartbeat_check(rate)
+        except Exception as e:
+            heartbeat_error[0] = e
+
+    timer.call_repeatedly(heartbeat / rate, tick, (rate,))
+    return heartbeat_error
 
 
 def asynloop(obj, connection, consumer, blueprint, hub, qos,
@@ -41,13 +57,13 @@ def asynloop(obj, connection, consumer, blueprint, hub, qos,
 
     on_task_received = obj.create_task_handler()
 
-    _enable_amqheartbeats(hub.timer, connection, rate=hbrate)
+    heartbeat_error = _enable_amqheartbeats(hub.timer, connection, rate=hbrate)
 
     consumer.on_message = on_task_received
-    consumer.consume()
-    obj.on_ready()
     obj.controller.register_with_event_loop(hub)
     obj.register_with_event_loop(hub)
+    consumer.consume()
+    obj.on_ready()
 
     # did_start_ok will verify that pool processes were able to start,
     # but this will only work the first time we start, as
@@ -77,6 +93,8 @@ def asynloop(obj, connection, consumer, blueprint, hub, qos,
                 raise WorkerShutdown(should_stop)
             elif should_terminate is not None and should_stop is not False:
                 raise WorkerTerminate(should_terminate)
+            elif heartbeat_error[0] is not None:
+                raise heartbeat_error[0]
 
             # We only update QoS when there's no more messages to read.
             # This groups together qos calls, and makes sure that remote
@@ -102,8 +120,9 @@ def synloop(obj, connection, consumer, blueprint, hub, qos,
     RUN = bootsteps.RUN
     on_task_received = obj.create_task_handler()
     perform_pending_operations = obj.perform_pending_operations
+    heartbeat_error = [None]
     if getattr(obj.pool, 'is_green', False):
-        _enable_amqheartbeats(obj.timer, connection, rate=hbrate)
+        heartbeat_error = _enable_amqheartbeats(obj.timer, connection, rate=hbrate)
     consumer.on_message = on_task_received
     consumer.consume()
 
@@ -111,6 +130,8 @@ def synloop(obj, connection, consumer, blueprint, hub, qos,
 
     while blueprint.state == RUN and obj.connection:
         state.maybe_shutdown()
+        if heartbeat_error[0] is not None:
+            raise heartbeat_error[0]
         if qos.prev != qos.value:
             qos.update()
         try:
