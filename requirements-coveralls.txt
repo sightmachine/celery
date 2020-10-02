@@ -1,0 +1,5 @@
+# Use public repo for coverall upload
+
+coverage==4.3.4
+gevent==1.4.0
+coveralls
