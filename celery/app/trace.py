@@ -221,9 +221,7 @@ class TraceInfo(object):
         except Exception as fail_exc:
             _, _, tmp_tb = sys.exc_info()
             try:
-                msg = 'Exception raised while handling failure: {0!r}:\n{1}' \
-                    .format(fail_exc, tmp_tb)
-                warn(RuntimeWarning(msg))
+                self._log_error(task, req, fail_exc)
             finally:
                 del tmp_tb
 
