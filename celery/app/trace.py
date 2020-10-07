@@ -220,8 +220,10 @@ class TraceInfo(object):
             return einfo
         except Exception as fail_exc:
             _, _, tmp_tb = sys.exc_info()
+            einfo = ExceptionInfo()
             try:
-                self._log_error(task, req, fail_exc)
+                report_internal_error(task, fail_exc)
+                self._log_error(task, req, einfo)
             finally:
                 del tmp_tb
 
