@@ -1,4 +1,4 @@
-pytest-cov
+pytest-cov==2.4.0
 codecov
 -r extras/redis.txt
 -r extras/sqlalchemy.txt

@@ -76,6 +76,12 @@ def celery_config():
 
 
 @pytest.fixture(scope='session')
+def celery_parameters():
+    # Including this so pytest doesn't complain
+    return {}
+
+
+@pytest.fixture(scope='session')
 def use_celery_app_trap():
     return True
 
@@ -232,9 +238,14 @@ def sanity_stdouts(request):
 
 @pytest.fixture(autouse=True)
 def sanity_logging_side_effects(request):
+    '''Bug-fix version of this method taken from Celery 4.3:
+    https://github.com/celery/celery/blob/4.3/t/unit/conftest.py
+    '''
+    from _pytest.logging import LogCaptureHandler
     root = logging.getLogger()
     rootlevel = root.level
-    roothandlers = root.handlers
+    roothandlers = [
+        x for x in root.handlers if not isinstance(x, LogCaptureHandler)]
 
     yield
 
@@ -242,7 +253,9 @@ def sanity_logging_side_effects(request):
     root_now = logging.getLogger()
     if root_now.level != rootlevel:
         raise RuntimeError(CASE_LOG_LEVEL_EFFECT.format(this))
-    if root_now.handlers != roothandlers:
+    newhandlers = [x for x in root_now.handlers if not isinstance(
+        x, LogCaptureHandler)]
+    if newhandlers != roothandlers:
         raise RuntimeError(CASE_LOG_HANDLER_EFFECT.format(this))
 
 
