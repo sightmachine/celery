@@ -231,3 +231,14 @@ Alejandro Pernin, 2016/12/23
 Yuval Shalev, 2016/12/27
 Morgan Doocy, 2017/01/02
 Arcadiy Ivanov, 2017/01/08
+Ryan Hiebert, 2017/01/20
+Jianjian Yu, 2017/04/09
+Brian May, 2017/04/10
+Dmytro Petruk, 2017/04/12
+Joey Wilhelm, 2017/04/12
+Yoichi Nakayama, 2017/04/25
+Simon Schmidt, 2017/05/19
+Anthony Lukach, 2017/05/23
+Samuel Dion-Girardeau, 2017/05/29
+Aydin Sen, 2017/06/14
+Preston Moore, 2017/06/18

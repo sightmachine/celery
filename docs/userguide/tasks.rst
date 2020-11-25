@@ -66,10 +66,10 @@ consider enabling the :setting:`task_reject_on_worker_lost` setting.
 
     The default prefork pool scheduler is not friendly to long-running tasks,
     so if you have tasks that run for minutes/hours make sure you enable
-    the -Ofair`` command-line argument to the :program:`celery worker`.
-    See :ref:`prefork-pool-prefetch` for more information, and for the
-    best performance route long-running and short-running tasks to
-    dedicated workers (:ref:`routing-automatic`).
+    the :option:`-Ofair <celery worker -O>` command-line argument to
+    the :program:`celery worker`. See :ref:`prefork-pool-prefetch` for more
+    information, and for the best performance route long-running and
+    short-running tasks to dedicated workers (:ref:`routing-automatic`).
 
     If your worker hangs then please investigate what tasks are running
     before submitting an issue, as most likely the hanging is caused
@@ -173,7 +173,7 @@ The ``base`` argument to the task decorator specifies the base class of the task
     class MyTask(celery.Task):
 
         def on_failure(self, exc, task_id, args, kwargs, einfo):
-            print('{0!r} failed: {1!r}'.format(task_id, exc)
+            print('{0!r} failed: {1!r}'.format(task_id, exc))
 
     @task(base=MyTask)
     def add(x, y):
@@ -855,6 +855,10 @@ General
     rate limit. To enforce a global rate limit (e.g., for an API with a
     maximum number of  requests per second), you must restrict to a given
     queue.
+
+    .. note::
+
+        This attribute is ignored if the task is requested with an ETA.
 
 .. attribute:: Task.time_limit
 
@@ -1569,6 +1573,7 @@ By default celery will not enable you to run tasks within task synchronously
 in rare or extreme cases you might have to do so.
 **WARNING**:
 enabling subtasks run synchronously is not recommended!
+
 .. code-block:: python
 
     @app.task
@@ -1739,29 +1744,23 @@ There's a race condition if the task starts executing
 before the transaction has been committed; The database object doesn't exist
 yet!
 
-The solution is to use the ``on_commit`` callback to launch your celery task 
+The solution is to use the ``on_commit`` callback to launch your celery task
 once all transactions have been committed successfully.
 
 .. code-block:: python
+
     from django.db.transaction import on_commit
-    
+
     def create_article(request):
         article = Article.objects.create()
         on_commit(lambda: expand_abbreviations.delay(article.pk))
 
 .. note::
-    Django 1.6 (and later) now enables autocommit mode by default,
-    and ``commit_on_success``/``commit_manually`` are deprecated.
+    ``on_commit`` is available in Django 1.9 and above, if you are using a
+    version prior to that then the `django-transaction-hooks`_ library
+    adds support for this.
 
-    This means each SQL query is wrapped and executed in individual
-    transactions, making it less likely to experience the
-    problem described above.
-
-    However, enabling ``ATOMIC_REQUESTS`` on the database
-    connection will bring back the transaction-per-request model and the
-    race condition along with it. In this case, the simple solution is
-    using the ``on_commit`` callback to launch your task after all 
-    transactions are completed.
+.. _`django-transaction-hooks`: https://github.com/carljm/django-transaction-hooks
 
 .. _task-example:
 

@@ -1,16 +1,287 @@
 version: 2.1
 
+workflows:
+  celery:
+    jobs:
+      - build-and-upload
+      - run-unit-tests:
+          requires:
+            - build-and-upload
+      - code-coverage-report:
+          requires:
+            - run-unit-tests
+
 orbs:
-  python: circleci/python@0.2.1
+  gcp-gke: circleci/gcp-gke@0.2.0
+  slack: circleci/slack@3.2.0
+
+commands:
+  configure_environment:
+    description: "Initial environment setup: Configure Gcloud and conditionally installs Docker Compose."
+    parameters:
+      with_compose:
+        description: "If true, sets up Docker Compose, which can then be used to
+        spin up Docker containers."
+        type: boolean
+        default: false
+    steps:
+      - run:
+          name: Authorize gcloud
+          command: |
+            echo $GCLOUD_SERVICE_KEY > ${HOME}/gcloud-service-key.json
+            gcloud auth activate-service-account --key-file=${HOME}/gcloud-service-key.json
+            gcloud --quiet config set project sightmachine-178216
+            gcloud --quiet config set compute/zone us-west1-a
+            gcloud --quiet container clusters get-credentials dev-k8s-uw1
+            ## To authenticate to Container Registry, use gcloud as a Docker credential helper
+            echo y | gcloud auth configure-docker
+
+      - when:
+          condition: << parameters.with_compose >>
+          steps:
+            - run:
+                name: Setup Docker Compose
+                command: |
+                  curl -L https://github.com/docker/compose/releases/download/1.19.0/docker-compose-`uname -s`-`uname -m` > ~/docker-compose
+                  chmod +x ~/docker-compose
+                  mv ~/docker-compose /usr/local/bin/docker-compose
+
+  send_slack_msg:
+    description: "If the job fails for the master branch, send a message to the Slack channel."
+    steps:
+      - slack/status:
+          failure_message: Uh-oh! *$CIRCLE_PROJECT_REPONAME* (master) - Job Failed <$CIRCLE_BUILD_URL|#$CIRCLE_BUILD_NUM>
+          include_project_field: false
+          include_job_number_field: false
+          fail_only: true
+          only_for_branches: master
+          webhook: $SLACK_WEBHOOK_URL
 
 jobs:
-  build-and-test:    
-    executor: python/default
+  ## ------------------ Build and Upload Celery Docker image to GCP Container Registry ------------------
+
+  build-and-upload:
+    machine:
+      image: ubuntu-1604:201903-01
+      docker_layer_caching: false
+    parameters:
+      run_merge: # do a prospective merge with target branch
+        type: boolean
+        default: false
     steps:
       - checkout
+      - run:
+          name: Configure Environment Variables
+          command: |
+            set -x
+            echo "export GIT_COMMIT=$(git rev-parse HEAD)" > custom.env
+            echo "export GIT_BRANCH=$(git symbolic-ref -q HEAD | sed -e 's:^refs/heads/::')" >> custom.env
+            # Sanitize branch name and Git tag (for docker image tag)
+            echo "export GIT_TAG=$(git describe --tag | sed -E 's/^[.-]|(^[.-])?[^A-Za-z0-9_.-]+/_/g')" >> custom.env
+            echo "export ARTIFACT_PATH=\"gcr.io/sightmachine-178216/celery\"" >> custom.env
+            echo "export BRANCH_NAME=$(echo ${CIRCLE_BRANCH} | sed -E 's/^[.-]|(^[.-])?[^A-Za-z0-9_.-]+/_/g')" >> custom.env
 
+      - persist_to_workspace:
+          root: .
+          paths:
+            - custom.env
+            - .coveragerc
 
-workflows:
-  main:
-    jobs:
-      - build-and-test
+      - configure_environment
+
+      - run:
+          name: Build Celery Docker Image
+          command: |
+            source custom.env
+            echo "Building ${ARTIFACT_PATH}:${GIT_COMMIT}"
+            docker build -f docker/Dockerfile \
+                         --build-arg GIT_BRANCH=${GIT_BRANCH} \
+                         --build-arg GIT_TAG=${GIT_TAG} \
+                         --build-arg GIT_COMMIT=${GIT_COMMIT} \
+                         -t ${ARTIFACT_PATH}:${BRANCH_NAME}-dev \
+                         -t ${ARTIFACT_PATH}:${GIT_TAG}-dev \
+                         -t ${ARTIFACT_PATH}:${GIT_COMMIT}-dev .
+
+      - run:
+          name: Upload Celery Docker Image to GCR
+          command: |
+            source custom.env
+            docker push ${ARTIFACT_PATH}:${BRANCH_NAME}-dev
+            docker push ${ARTIFACT_PATH}:${GIT_TAG}-dev
+            docker push ${ARTIFACT_PATH}:${GIT_COMMIT}-dev
+
+      - send_slack_msg
+
+  ## ------------------ Run Unit Tests ------------------
+
+  run-unit-tests:
+    parameters:
+      with_merge: # Part of the PR-merge workflow
+        type: boolean
+        default: false
+    docker:
+      - image: google/cloud-sdk
+    parallelism: 6
+    steps:
+      - attach_workspace:
+          at: /tmp/workspace
+
+      - configure_environment:
+          with_compose: true
+
+      - setup_remote_docker:
+          docker_layer_caching: false
+
+      - run:
+          name: Create the Celery container
+          command: |
+            source /tmp/workspace/custom.env
+
+            echo "Spinning up Docker container: Celery ($ARTIFACT_PATH:${GIT_COMMIT}-dev)"
+            echo -e '
+              version: "3"
+              services:
+                celery:
+                  container_name: celery
+                  image: ${ARTIFACT_PATH}:${GIT_COMMIT}-dev
+                  environment:
+                    TEST_BROKER: pyamqp://rabbit:5672
+                    TEST_BACKEND: redis://redis
+                    PYTHONUNBUFFERED: 1
+                    PYTHONDONTWRITEBYTECODE: 1
+                    REDIS_HOST: redis
+                    WORKER_LOGLEVEL: DEBUG
+                    AZUREBLOCKBLOB_URL: azureblockblob://DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+                    PYTHONPATH: /home/developer/celery
+                  command:
+                    - cat
+                  tty: true
+                  hostname: celery
+                  depends_on:
+                    - rabbit
+                    - redis
+                    - dynamodb
+                    - azurite
+
+                rabbit:
+                  image: gcr.io/sightmachine-178216/rabbitmq:3.8.0
+
+                redis:
+                  image: gcr.io/sightmachine-178216/redis:5.0.6
+
+                dynamodb:
+                  image: gcr.io/sightmachine-178216/dwmkerr/dynamodb:38
+
+                azurite:
+                  image: arafato/azurite:2.6.5
+            ' > docker-compose.yml
+
+            docker-compose up -d
+            docker-compose ps
+            while [[ "$(docker inspect -f '{{.State.Running}}' celery 2>/dev/null)" != "true" ]]; do echo "Waiting for celery container to start..."; done
+      - run:
+          name: Run Unit Tests
+          command: |
+            source /tmp/workspace/custom.env
+            docker-compose exec celery circleci_scripts/execute_unit_tests.sh
+      - run:
+          name: Move Unit Test Results Out of Container
+          when: always
+          command: docker cp celery:/home/developer/tmp/junit /tmp/workspace/junit
+
+      # Store the test results on each node so we can see failures
+      - store_test_results:
+          path: /tmp/workspace/junit/
+
+      - store_artifacts:
+          name: Save Unit Test Results
+          path: /tmp/workspace/junit/
+
+      - run:
+          name: Copy Coverage Results to Workspace
+          command: |
+            mkdir -p /tmp/workspace/coverage-report-${CIRCLE_BUILD_NUM}
+            docker cp celery:/home/developer/celery/.coverage /tmp/workspace/coverage-report-${CIRCLE_BUILD_NUM}/.coverage
+
+      - persist_to_workspace:
+          root: /tmp/workspace
+          paths:
+            - "coverage-report-*"
+
+      - send_slack_msg
+
+  ## ------------------ Generate Code Coverage Report ------------------
+
+  code-coverage-report:
+    parameters:
+      with_merge: # Part of the PR-merge workflow
+        type: boolean
+        default: false
+    docker:
+      - image: circleci/python:3.7
+    steps:
+      - when:
+          condition: << parameters.with_merge >>
+          steps:
+            - run:
+                name: Abort if not building a pull request
+                command: |
+                  if [ -z "$CIRCLE_PULL_REQUEST" ]; then
+                    circleci-agent step halt
+                  fi
+      # Coverage html requires source code to build HTML views
+      - checkout
+
+      # Need a workspace for all the coverage reports
+      - attach_workspace:
+          at: /tmp/workspace
+
+      - run:
+          name: Compile Coverage Reports
+          command: |
+            sudo pip install -r requirements-coveralls.txt
+            coverage combine /tmp/workspace/coverage-report-*/.coverage
+            sed "s@/home/developer@/home/circleci/project@g" -i .coverage
+            coveralls
+
+  ## ------------------ Run nightly build for wheel upload ------------------
+
+  # upload-wheels:
+  #   machine:
+  #     image: ubuntu-1604:201903-01
+  #     docker_layer_caching: true
+
+  #   steps:
+  #     - checkout
+
+  #     - configure_environment:
+  #         with_compose: true
+
+  #     - run:
+  #         name: Build pypi dependencies and upload wheels
+  #         command: |
+  #           # Set jfrog cli version to 1.33.1
+  #           curl -fL https://getcli.jfrog.io | sh -s 1.33.1
+  #           chmod 755 ./jfrog
+  #           sudo mv ./jfrog /usr/local/bin/
+  #           jfrog rt c rt-server-sm --url=https://sightmachine.jfrog.io/sightmachine --user=circleci-admin-user --password=$JFROG_PWD --interactive=false
+
+  #           docker pull gcr.io/sightmachine-178216/ma:master-dev
+  #           docker run -dit --name ma gcr.io/sightmachine-178216/ma:master-dev /bin/bash
+  #           while [[ "$(docker inspect -f '{{.State.Running}}' ma 2>/dev/null)" != "true" ]]; do echo "Waiting for ma container to start..."; done
+  #           docker ps -f name=ma
+  #           docker cp /home/circleci/project ma:/
+  #           docker exec -ti ma sh -c "
+  #             cd /project
+  #             mkdir wheel-dir
+  #             pip wheel --wheel-dir=./wheel-dir -r requirements.txt
+  #             pip wheel --wheel-dir=./wheel-dir -r requirements-dev.txt
+  #             pip wheel --wheel-dir=./wheel-dir -r requirements-test.txt
+  #           "
+  #           docker cp ma:/project/wheel-dir wheel-dir
+
+  #           echo "Uploading Updated Wheels...."
+  #           jfrog rt u "wheel-dir/*.whl" pypi-dependencies/wheel/
+
+  #     - send_slack_msg
+

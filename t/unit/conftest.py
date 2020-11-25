@@ -18,7 +18,7 @@ from celery.backends.cache import CacheBackend, DummyClient
 # in case user did not do the `python setup.py develop` yet,
 # that installs the pytest plugin into the setuptools registry.
 from celery.contrib.pytest import (
-    celery_app, celery_enable_logging, depends_on_current_app,
+    celery_app, celery_enable_logging, depends_on_current_app, celery_parameters
 )
 from celery.contrib.testing.app import Trap, TestApp
 from celery.contrib.testing.mocks import (
@@ -48,8 +48,10 @@ CASE_LOG_HANDLER_EFFECT = 'Test {0} modified handlers for the root logger'
 def celery_config():
     return {
         'broker_url': 'memory://',
+        'broker_transport_options': {
+            'polling_interval': 0.1
+        },
         'result_backend': 'cache+memory://',
-
         'task_default_queue': 'testcelery',
         'task_default_exchange': 'testcelery',
         'task_default_routing_key': 'testcelery',
@@ -71,6 +73,12 @@ def celery_config():
             'password': os.environ.get('MONGO_PASSWORD'),
         }
     }
+
+
+@pytest.fixture(scope='session')
+def celery_parameters():
+    # Including this so pytest doesn't complain
+    return {}
 
 
 @pytest.fixture(scope='session')
@@ -230,9 +238,14 @@ def sanity_stdouts(request):
 
 @pytest.fixture(autouse=True)
 def sanity_logging_side_effects(request):
+    '''Bug-fix version of this method taken from Celery 4.3:
+    https://github.com/celery/celery/blob/4.3/t/unit/conftest.py
+    '''
+    from _pytest.logging import LogCaptureHandler
     root = logging.getLogger()
     rootlevel = root.level
-    roothandlers = root.handlers
+    roothandlers = [
+        x for x in root.handlers if not isinstance(x, LogCaptureHandler)]
 
     yield
 
@@ -240,7 +253,9 @@ def sanity_logging_side_effects(request):
     root_now = logging.getLogger()
     if root_now.level != rootlevel:
         raise RuntimeError(CASE_LOG_LEVEL_EFFECT.format(this))
-    if root_now.handlers != roothandlers:
+    newhandlers = [x for x in root_now.handlers if not isinstance(
+        x, LogCaptureHandler)]
+    if newhandlers != roothandlers:
         raise RuntimeError(CASE_LOG_HANDLER_EFFECT.format(this))
 
 
